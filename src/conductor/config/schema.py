@@ -594,19 +594,6 @@ class CostConfig(BaseModel):
     """Custom pricing overrides for specific models."""
 
 
-class HooksConfig(BaseModel):
-    """Lifecycle hooks for workflow events."""
-
-    on_start: str | None = None
-    """Expression evaluated when workflow starts."""
-
-    on_complete: str | None = None
-    """Expression evaluated when workflow completes successfully."""
-
-    on_error: str | None = None
-    """Expression evaluated when workflow fails."""
-
-
 class RetryPolicy(BaseModel):
     """Per-agent retry policy for transient failure resilience.
 
@@ -3632,10 +3619,38 @@ class RuntimeConfig(BaseModel):
         return _validate_skill_entries(v)
 
 
+_REMOVED_WORKFLOW_FIELDS: dict[str, str] = {
+    "hooks": (
+        "`workflow.hooks:` (on_start/on_complete/on_error) was removed in #476. "
+        "The hook templates were rendered and then discarded, so the block never "
+        "had any observable effect. Remove it from your workflow. For "
+        "completion or failure notification, subscribe to the `workflow_completed` "
+        "/ `workflow_failed` events in the JSONL event log instead."
+    ),
+}
+
+
 class WorkflowDef(BaseModel):
     """Top-level workflow configuration."""
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_fields(cls, data: Any) -> Any:
+        """Give a targeted error for fields removed from the schema.
+
+        ``extra="forbid"`` already rejects an unknown ``hooks:`` key, but its
+        generic "extra inputs are not permitted" message reads like a typo and
+        points the user back at the (now-deleted) docs. Naming the removal and
+        the replacement keeps an upgrading workflow from silently misdiagnosing
+        the failure. See #476.
+        """
+        if isinstance(data, dict):
+            for key, guidance in _REMOVED_WORKFLOW_FIELDS.items():
+                if key in data:
+                    raise ValueError(guidance)
+        return data
 
     name: str
     """Unique workflow identifier."""
@@ -3663,9 +3678,6 @@ class WorkflowDef(BaseModel):
 
     cost: CostConfig = Field(default_factory=CostConfig)
     """Cost tracking configuration."""
-
-    hooks: HooksConfig | None = None
-    """Lifecycle event hooks."""
 
     metadata: dict[str, Any] = Field(default_factory=dict)
     """Arbitrary key-value metadata for external tooling (dashboards, trackers, etc.).

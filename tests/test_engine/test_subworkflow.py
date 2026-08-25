@@ -2290,7 +2290,7 @@ class TestSubWorkflowTerminate:
         )
 
         # The child's rendered output must be preserved as an attribute on
-        # the downgraded error so on_error hooks and debugging surfaces can
+        # the downgraded error so debugging surfaces can
         # inspect what the child intended to emit (see issue #219 PR review:
         # "child sub-workflow's `output` dict is silently discarded").
         assert hasattr(excinfo.value, "terminated_output"), (

@@ -227,23 +227,6 @@ class ForEachGroupOutput:
 
 
 @dataclass
-class LifecycleHookResult:
-    """Result of executing a lifecycle hook.
-
-    Attributes:
-        hook_name: Name of the hook (on_start, on_complete, on_error).
-        executed: Whether the hook was executed.
-        result: The rendered result of the hook template.
-        error: Any error that occurred during hook execution.
-    """
-
-    hook_name: str
-    executed: bool
-    result: str | None = None
-    error: str | None = None
-
-
-@dataclass
 class ExecutionStep:
     """A single step in the execution plan.
 
@@ -2123,7 +2106,7 @@ class WorkflowEngine:
         The child's rendered output dict (from ``output_template:`` or the
         child workflow's ``output:`` mapping) is preserved on the raised
         :class:`ExecutionError` as the ``terminated_output`` attribute so
-        debuggers, on_error hooks, and CLI surfaces can inspect what the
+        debuggers and CLI surfaces can inspect what the
         child intended to emit. The child's reason is also embedded in the
         exception message for human-readable diagnostics. We deliberately do
         NOT merge ``terminated_output`` into the parent's context — that
@@ -2150,8 +2133,8 @@ class WorkflowEngine:
             # handler treats this as a normal sub-workflow failure (parent's
             # own `workflow_failed` does NOT carry `is_explicit: true`). The
             # child's rendered output / reason / terminate-step name are
-            # preserved as structured attributes on the wrapper so on_error
-            # hooks, debugging surfaces, and the CLI can inspect them without
+            # preserved as structured attributes on the wrapper so debugging
+            # surfaces and the CLI can inspect them without
             # walking ``__cause__``.
             raise SubworkflowTerminatedError(
                 f"Sub-workflow '{agent.workflow}' (agent '{agent.name}') "
@@ -2452,12 +2435,10 @@ class WorkflowEngine:
         """Execute the workflow from entry_point to $end.
 
         This is the main entry point for workflow execution. It:
-        1. Calls on_start lifecycle hook if defined
-        2. Sets up the context with the provided inputs
-        3. Enforces iteration and timeout limits
-        4. Executes agents in sequence based on routing rules
-        5. Calls on_complete/on_error lifecycle hooks as appropriate
-        6. Returns the final output built from output templates
+        1. Sets up the context with the provided inputs
+        2. Enforces iteration and timeout limits
+        3. Executes agents in sequence based on routing rules
+        4. Returns the final output built from output templates
 
         Args:
             inputs: Workflow input values.
@@ -2479,9 +2460,6 @@ class WorkflowEngine:
         self.context.set_workflow_inputs(merged_inputs)
         self.limits.start()
         current_agent_name = self.config.workflow.entry_point
-
-        # Execute on_start hook
-        self._execute_hook("on_start")
 
         try:
             result = await self._execute_loop(current_agent_name)
@@ -2524,9 +2502,6 @@ class WorkflowEngine:
 
         # Fresh timeout window for resumed execution
         self.limits.start_time = _time.monotonic()
-
-        # Execute on_start hook (signals resume)
-        self._execute_hook("on_start")
 
         try:
             result = await self._execute_loop(current_agent_name)
@@ -2854,8 +2829,8 @@ class WorkflowEngine:
         duplicate events. (It uses a dedicated flag rather than
         ``_last_checkpoint_path is not None`` because periodic checkpoints,
         issue #244, also set ``_last_checkpoint_path``.) Does not raise on the
-        expected failure paths — ``_save_checkpoint_on_failure``, ``_emit`` (per-
-        subscriber guarded), and ``_execute_hook`` all swallow their own errors.
+        expected failure paths — ``_save_checkpoint_on_failure`` and ``_emit``
+        (per-subscriber guarded) both swallow their own errors.
 
         Args:
             message: Human-readable reason for the stop. Used as the failure
@@ -2890,7 +2865,7 @@ class WorkflowEngine:
                 else "the checkpoint could not be written"
             )
         self._emit("workflow_failed", fail_data)
-        self._execute_hook("on_error", error=error)
+
         return self._last_checkpoint_path
 
     def _get_top_level_agent_names(self) -> list[str]:
@@ -4345,7 +4320,7 @@ class WorkflowEngine:
                                     "output": result,
                                 },
                             )
-                            self._execute_hook("on_complete", result=result)
+
                             return result
 
                         current_agent_name = route_result.target
@@ -4417,7 +4392,6 @@ class WorkflowEngine:
                                     "output": result,
                                 },
                             )
-                            self._execute_hook("on_complete", result=result)
                             return result
 
                         current_agent_name = route_result.target
@@ -4573,7 +4547,6 @@ class WorkflowEngine:
                                         **termination_meta,
                                     },
                                 )
-                                self._execute_hook("on_complete", result=output)
                                 return output
 
                             # status == "failed" — raise an explicit termination
@@ -4675,7 +4648,6 @@ class WorkflowEngine:
                                         "output": result,
                                     },
                                 )
-                                self._execute_hook("on_complete", result=result)
                                 return result
                             current_agent_name = gate_result.route
                             continue
@@ -4714,7 +4686,6 @@ class WorkflowEngine:
                                         "output": result,
                                     },
                                 )
-                                self._execute_hook("on_complete", result=result)
                                 return result
 
                             current_agent_name = route_target
@@ -4850,7 +4821,6 @@ class WorkflowEngine:
                                         "output": result,
                                     },
                                 )
-                                self._execute_hook("on_complete", result=result)
                                 return result
 
                             current_agent_name = route_result.target
@@ -4982,7 +4952,6 @@ class WorkflowEngine:
                                         "output": result,
                                     },
                                 )
-                                self._execute_hook("on_complete", result=result)
                                 return result
 
                             current_agent_name = route_result.target
@@ -5035,7 +5004,6 @@ class WorkflowEngine:
                                         "output": result,
                                     },
                                 )
-                                self._execute_hook("on_complete", result=result)
                                 return result
 
                             current_agent_name = route_result.target
@@ -5120,7 +5088,6 @@ class WorkflowEngine:
                                         "output": result,
                                     },
                                 )
-                                self._execute_hook("on_complete", result=result)
                                 return result
 
                             current_agent_name = route_result.target
@@ -5285,7 +5252,6 @@ class WorkflowEngine:
                                     "output": result,
                                 },
                             )
-                            self._execute_hook("on_complete", result=result)
                             return result
 
                         current_agent_name = route_result.target
@@ -5317,7 +5283,6 @@ class WorkflowEngine:
                 "output": e.output,
             }
             self._emit("workflow_failed", fail_data)
-            self._execute_hook("on_error", error=e)
             raise
         except ConductorError as e:
             fail_data = {
@@ -5340,8 +5305,6 @@ class WorkflowEngine:
                 # hard-Kill path handled by ``handle_dashboard_stop``. #245.
                 fail_data["stopped_by_user"] = True
             self._emit("workflow_failed", fail_data)
-            # Execute on_error hook with error information
-            self._execute_hook("on_error", error=e)
             self._save_checkpoint_on_failure(e)
             raise
         except Exception as e:
@@ -5353,8 +5316,6 @@ class WorkflowEngine:
                     "agent_name": self._current_agent_name,
                 },
             )
-            # Execute on_error hook for unexpected errors
-            self._execute_hook("on_error", error=e)
             self._save_checkpoint_on_failure(e)
             raise
         except asyncio.CancelledError:
@@ -5380,14 +5341,9 @@ class WorkflowEngine:
             # Windows startup crash (#116) leaves no ``workflow_failed``
             # event in the JSONL log, making the failure invisible.
             #
-            # NOTE: we deliberately do NOT invoke ``on_error`` lifecycle
-            # hooks here. Their declared signature accepts ``Exception |
-            # None``, so user-defined hooks may assume ``e.args`` /
-            # ``traceback`` semantics that don't hold for ``SystemExit``,
-            # and surfacing a process-exit signal to them would change
-            # their contract. Users who need hook-like notification for
-            # ``BaseException`` failures should subscribe to the
-            # ``workflow_failed`` event and check ``is_base_exception``.
+            # Consumers that need notification for ``BaseException``
+            # failures should subscribe to ``workflow_failed`` and check
+            # the ``is_base_exception`` flag set below.
             #
             # The diagnostic side effects below (``_emit``,
             # ``_save_checkpoint_on_failure``) are wrapped in their own
@@ -5468,66 +5424,6 @@ class WorkflowEngine:
                     merged[name] = self._zero_value_for_type(input_def.type)
 
         return merged
-
-    def _execute_hook(
-        self,
-        hook_name: str,
-        result: dict[str, Any] | None = None,
-        error: Exception | None = None,
-    ) -> LifecycleHookResult:
-        """Execute a lifecycle hook if defined.
-
-        Renders the hook template with the current context plus any
-        additional information (result for on_complete, error for on_error).
-
-        Args:
-            hook_name: Name of the hook (on_start, on_complete, on_error).
-            result: Workflow result (for on_complete hook).
-            error: Exception that occurred (for on_error hook).
-
-        Returns:
-            LifecycleHookResult with execution status and any rendered result.
-        """
-        hooks = self.config.workflow.hooks
-        if hooks is None:
-            return LifecycleHookResult(hook_name=hook_name, executed=False)
-
-        hook_template = getattr(hooks, hook_name, None)
-        if not hook_template:
-            return LifecycleHookResult(hook_name=hook_name, executed=False)
-
-        try:
-            # Build context for hook template
-            ctx = self.context.get_for_template()
-
-            # Add hook-specific context
-            if result is not None:
-                ctx["result"] = result
-
-            if error is not None:
-                ctx["error"] = {
-                    "type": type(error).__name__,
-                    "message": str(error),
-                }
-                if hasattr(error, "suggestion") and error.suggestion:
-                    ctx["error"]["suggestion"] = error.suggestion
-
-            # Render the hook template
-            rendered = self.renderer.render(hook_template, ctx)
-
-            return LifecycleHookResult(
-                hook_name=hook_name,
-                executed=True,
-                result=rendered,
-            )
-
-        except Exception as e:
-            # Hook execution errors should not fail the workflow
-            return LifecycleHookResult(
-                hook_name=hook_name,
-                executed=True,
-                error=str(e),
-            )
 
     def _trim_context_if_needed(self) -> None:
         """Trim context if max_tokens is configured and exceeded.

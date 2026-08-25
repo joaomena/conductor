@@ -13,7 +13,6 @@ This document provides a comprehensive reference for the Conductor workflow YAML
 - [Tools](#tools)
 - [Skills](#skills)
 - [External File References](#external-file-references)
-- [Hooks](#hooks)
 
 ## Workflow Configuration
 
@@ -39,11 +38,6 @@ workflow:
     timeout_seconds: 600            # Optional: Maximum wall-clock time (seconds)
     budget_usd: 5.00                # Optional: Cost cap in USD (no tracking when unset)
     budget_mode: audit              # audit (default) | enforce
-
-  hooks:
-    on_start: "{{ template }}"      # Optional: Expression evaluated on start
-    on_complete: "{{ template }}"   # Optional: Expression evaluated on success
-    on_error: "{{ template }}"      # Optional: Expression evaluated on error
 
   context_mode: accumulate          # accumulate | snapshot | minimal (default: accumulate)
 
@@ -1169,7 +1163,7 @@ agents:
 
 **Restrictions** — terminate steps cannot have `routes`, `tools`, `output`, `prompt`, `model`, `provider`, `system_prompt`, `command`, `args`, `env`, `working_dir`, `timeout`, `timeout_seconds`, `max_session_seconds`, `max_agent_iterations`, `session_key`, `max_depth`, `retry`, `dialog`, `reasoning`, `validator`, `workflow`, `input_mapping`, or `options`. They cannot appear as members of a parallel group or as a `for_each` inline agent — route to them from those groups' `routes:` instead.
 
-**Sub-workflow boundary** — a `status: failed` terminate inside a sub-workflow is downgraded to a `SubworkflowTerminatedError` (subclass of `ExecutionError`) at the parent boundary so the parent treats it as a normal sub-workflow failure (its own `workflow_failed` does NOT inherit `is_explicit: true`). The child's rendered output, reason, and terminate step name are preserved on the wrapper as `terminated_output`, `terminated_reason`, and `terminated_by` for `on_error` hooks and debugging surfaces. A `status: success` terminate inside a sub-workflow returns its rendered output cleanly and the parent continues with its next routes.
+**Sub-workflow boundary** — a `status: failed` terminate inside a sub-workflow is downgraded to a `SubworkflowTerminatedError` (subclass of `ExecutionError`) at the parent boundary so the parent treats it as a normal sub-workflow failure (its own `workflow_failed` does NOT inherit `is_explicit: true`). The child's rendered output, reason, and terminate step name are preserved on the wrapper as `terminated_output`, `terminated_reason`, and `terminated_by` for debugging surfaces. A `status: success` terminate inside a sub-workflow returns its rendered output cleanly and the parent continues with its next routes.
 
 See [`examples/terminate.yaml`](../examples/terminate.yaml) for a complete worked example with all three paths.
 
@@ -2510,34 +2504,6 @@ Only UTF-8 text files are supported. Non-UTF-8 files produce a `ConfigurationErr
 - **No conditional includes** — File references cannot be parameterized or conditional
 - **No caching** — Each `!file` reference reads the file independently
 - **Jinja includes search root**: Relative template includes (`{% include %}`, etc.) resolve only against the prompt file's own directory, with no fallback to the workflow directory or current working directory.
-
-## Hooks
-
-Lifecycle hooks execute template expressions at key workflow events:
-
-```yaml
-workflow:
-  hooks:
-    on_start: "{{ 'Starting workflow: ' + workflow.name }}"
-    on_complete: "{{ 'Workflow completed in ' + str(workflow.execution_time) + 's' }}"
-    on_error: "{{ 'Workflow failed: ' + workflow.error.message }}"
-```
-
-### Available Hook Contexts
-
-**`on_start`**:
-- `workflow.name`, `workflow.description`, `workflow.dir`, `workflow.file`
-- `workflow.input.*` (all input values)
-
-**`on_complete`**:
-- All agent outputs
-- `workflow.execution_time` (total seconds)
-- `workflow.iteration_count` (total iterations)
-
-**`on_error`**:
-- `workflow.error.message` (error message)
-- `workflow.error.agent` (agent that failed)
-- Partial agent outputs (agents that completed before failure)
 
 ## Complete Example
 

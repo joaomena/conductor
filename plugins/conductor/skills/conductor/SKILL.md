@@ -108,7 +108,6 @@ For runtime config, context modes, limits, and cost tracking, see [references/au
 | `human_gate` | Pauses for user decision with options (Markdown + auto-linkified paths/URLs) |
 | `dialog` | Per-agent trigger for conditional multi-turn conversation with the user |
 | `retry` | Per-agent retry policy for transient `provider_error` / `timeout` failures |
-| `hooks` | Workflow lifecycle expressions: `on_start`, `on_complete`, `on_error` |
 | `metadata` | Arbitrary YAML or `--metadata`/`-m` key-values surfaced in `workflow_started` events |
 | `instructions` | Workflow-level workspace context (inline strings or `!file` includes) prepended to every prompt |
 | `--workspace-instructions` | CLI flag to auto-discover AGENTS.md / CLAUDE.md / `.github/copilot-instructions.md` / `.github/instructions/**/*.instructions.md` (only `applyTo: "**"` files) |

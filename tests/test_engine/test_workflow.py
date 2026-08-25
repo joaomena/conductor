@@ -20,7 +20,6 @@ from conductor.config.schema import (
     ContextConfig,
     ForEachDef,
     GateOption,
-    HooksConfig,
     InputDef,
     LimitsConfig,
     OutputField,
@@ -1792,147 +1791,6 @@ class TestWorkflowEngineHumanGates:
         mock_cli_handle.assert_not_called()
 
 
-class TestWorkflowEngineLifecycleHooks:
-    """Tests for lifecycle hooks execution."""
-
-    @pytest.mark.asyncio
-    async def test_on_start_hook_executed(self) -> None:
-        """Test that on_start hook is executed at workflow start."""
-        from conductor.config.schema import HooksConfig
-
-        config = WorkflowConfig(
-            workflow=WorkflowDef(
-                name="hooks-workflow",
-                entry_point="agent1",
-                hooks=HooksConfig(
-                    on_start="Workflow started with input: {{ workflow.input.question }}",
-                ),
-            ),
-            agents=[
-                AgentDef(
-                    name="agent1",
-                    model="gpt-4",
-                    prompt="Hello",
-                    output={"result": OutputField(type="string")},
-                    routes=[RouteDef(to="$end")],
-                ),
-            ],
-            output={"result": "{{ agent1.output.result }}"},
-        )
-
-        def mock_handler(agent, prompt, context):
-            return {"result": "done"}
-
-        provider = CopilotProvider(mock_handler=mock_handler)
-        engine = WorkflowEngine(config, provider)
-
-        result = await engine.run({"question": "test"})
-
-        assert result["result"] == "done"
-
-    @pytest.mark.asyncio
-    async def test_on_complete_hook_executed(self) -> None:
-        """Test that on_complete hook is executed on success."""
-        from conductor.config.schema import HooksConfig
-
-        config = WorkflowConfig(
-            workflow=WorkflowDef(
-                name="hooks-workflow",
-                entry_point="agent1",
-                hooks=HooksConfig(
-                    on_complete="Workflow completed with result: {{ result }}",
-                ),
-            ),
-            agents=[
-                AgentDef(
-                    name="agent1",
-                    model="gpt-4",
-                    prompt="Hello",
-                    output={"result": OutputField(type="string")},
-                    routes=[RouteDef(to="$end")],
-                ),
-            ],
-            output={"result": "{{ agent1.output.result }}"},
-        )
-
-        def mock_handler(agent, prompt, context):
-            return {"result": "success"}
-
-        provider = CopilotProvider(mock_handler=mock_handler)
-        engine = WorkflowEngine(config, provider)
-
-        result = await engine.run({})
-
-        assert result["result"] == "success"
-
-    @pytest.mark.asyncio
-    async def test_on_error_hook_executed(self) -> None:
-        """Test that on_error hook is executed on failure."""
-        from conductor.config.schema import HooksConfig
-        from conductor.exceptions import ProviderError
-
-        config = WorkflowConfig(
-            workflow=WorkflowDef(
-                name="hooks-workflow",
-                entry_point="agent1",
-                hooks=HooksConfig(
-                    on_error="Error: {{ error.type }} - {{ error.message }}",
-                ),
-            ),
-            agents=[
-                AgentDef(
-                    name="agent1",
-                    model="gpt-4",
-                    prompt="Hello",
-                    output={"result": OutputField(type="string")},
-                    routes=[RouteDef(to="$end")],
-                ),
-            ],
-            output={"result": "{{ agent1.output.result }}"},
-        )
-
-        def mock_handler(agent, prompt, context):
-            # Simulate a provider error during execution
-            raise ProviderError("API request failed", provider_name="copilot", status_code=500)
-
-        provider = CopilotProvider(mock_handler=mock_handler)
-        engine = WorkflowEngine(config, provider)
-
-        with pytest.raises(ProviderError, match="API request failed"):
-            await engine.run({})
-
-    @pytest.mark.asyncio
-    async def test_hooks_not_defined(self) -> None:
-        """Test that workflow works without hooks defined."""
-        config = WorkflowConfig(
-            workflow=WorkflowDef(
-                name="no-hooks-workflow",
-                entry_point="agent1",
-                # No hooks defined
-            ),
-            agents=[
-                AgentDef(
-                    name="agent1",
-                    model="gpt-4",
-                    prompt="Hello",
-                    output={"result": OutputField(type="string")},
-                    routes=[RouteDef(to="$end")],
-                ),
-            ],
-            output={"result": "{{ agent1.output.result }}"},
-        )
-
-        def mock_handler(agent, prompt, context):
-            return {"result": "done"}
-
-        provider = CopilotProvider(mock_handler=mock_handler)
-        engine = WorkflowEngine(config, provider)
-
-        result = await engine.run({})
-
-        assert result["result"] == "done"
-
-
 class TestWorkflowEngineContextTrimming:
     """Tests for context trimming integration in workflow engine."""
 
@@ -3504,8 +3362,6 @@ class TestWorkflowEngineTerminateAdditionalScenarios:
     - Terminate as a route target from a parallel group's routes and from a
       for_each group's routes (the main routing loop must dispatch to the
       terminate branch after the group completes).
-    - Lifecycle hooks (``on_complete`` for success, ``on_error`` for failed)
-      fire with the right arguments.
     """
 
     @pytest.mark.asyncio
@@ -3676,96 +3532,6 @@ class TestWorkflowEngineTerminateAdditionalScenarios:
         engine = WorkflowEngine(config, provider)
         result = await engine.run({})
         assert result == {"result": "from-for-each"}
-
-    @pytest.mark.asyncio
-    async def test_on_complete_hook_fires_for_success_terminate(self) -> None:
-        """`on_complete` hook must fire when a terminate step ends with success.
-
-        Hooks are a public extension point; a refactor that dropped the
-        `_execute_hook("on_complete", ...)` call from the success-terminate
-        branch would silently regress every workflow that relies on the
-        hook for completion notifications.
-        """
-        from unittest.mock import patch as _patch
-
-        config = WorkflowConfig(
-            workflow=WorkflowDef(
-                name="hook-success",
-                entry_point="bye",
-                runtime=RuntimeConfig(provider="copilot"),
-                context=ContextConfig(mode="accumulate"),
-                limits=LimitsConfig(max_iterations=5),
-                hooks=HooksConfig(on_complete="completed: {{ result }}"),
-            ),
-            agents=[
-                AgentDef(
-                    name="bye",
-                    type="terminate",
-                    status="success",
-                    reason="all done",
-                    output_template={"r": "ok"},
-                ),
-            ],
-            output={},
-        )
-        engine = WorkflowEngine(config, CopilotProvider())
-        with _patch.object(engine, "_execute_hook", wraps=engine._execute_hook) as spy:
-            result = await engine.run({})
-        assert result == {"r": "ok"}
-        completion_calls = [
-            call for call in spy.call_args_list if call.args and call.args[0] == "on_complete"
-        ]
-        assert len(completion_calls) == 1, (
-            f"on_complete must fire exactly once; got: {spy.call_args_list}"
-        )
-        # The hook must receive the rendered output dict, not a raw template.
-        assert completion_calls[0].kwargs.get("result") == {"r": "ok"}
-
-    @pytest.mark.asyncio
-    async def test_on_error_hook_fires_for_failed_terminate(self) -> None:
-        """`on_error` hook must fire when a terminate step ends with failed.
-
-        The hook receives the `WorkflowTerminated` exception so authors can
-        notify on the structured `reason`/`terminated_by` rather than a
-        generic error message.
-        """
-        from unittest.mock import patch as _patch
-
-        from conductor.exceptions import WorkflowTerminated
-
-        config = WorkflowConfig(
-            workflow=WorkflowDef(
-                name="hook-error",
-                entry_point="abort",
-                runtime=RuntimeConfig(provider="copilot"),
-                context=ContextConfig(mode="accumulate"),
-                limits=LimitsConfig(max_iterations=5),
-                hooks=HooksConfig(on_error="failed: {{ error.message }}"),
-            ),
-            agents=[
-                AgentDef(
-                    name="abort",
-                    type="terminate",
-                    status="failed",
-                    reason="halt",
-                ),
-            ],
-            output={},
-        )
-        engine = WorkflowEngine(config, CopilotProvider())
-        with (
-            _patch.object(engine, "_execute_hook", wraps=engine._execute_hook) as spy,
-            pytest.raises(WorkflowTerminated),
-        ):
-            await engine.run({})
-        error_calls = [
-            call for call in spy.call_args_list if call.args and call.args[0] == "on_error"
-        ]
-        assert len(error_calls) == 1, f"on_error must fire exactly once; got: {spy.call_args_list}"
-        passed_error = error_calls[0].kwargs.get("error")
-        assert isinstance(passed_error, WorkflowTerminated)
-        assert passed_error.reason == "halt"
-        assert passed_error.terminated_by == "abort"
 
     @pytest.mark.asyncio
     async def test_lifecycle_event_ordering_failed_terminate(self) -> None:

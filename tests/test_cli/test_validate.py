@@ -74,6 +74,14 @@ class TestValidateCommand:
         # Should mention the unknown agent
         assert "unknown" in result.output.lower()
 
+    def test_validate_removed_hooks_block(self, fixtures_dir: Path) -> None:
+        """A workflow declaring the removed `hooks:` block fails validation
+        with a message naming the field, not a silent no-op (#476)."""
+        workflow_file = fixtures_dir / "invalid_hooks.yaml"
+        result = runner.invoke(app, ["validate", str(workflow_file)])
+        assert result.exit_code != 0
+        assert "hooks" in result.output.lower()
+
     def test_validate_missing_entry_point(self, fixtures_dir: Path) -> None:
         """Test validating a file with missing entry point."""
         workflow_file = fixtures_dir / "invalid_missing_entry.yaml"

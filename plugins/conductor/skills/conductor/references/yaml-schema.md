@@ -133,11 +133,6 @@ workflow:
         cache_read_per_mtok: float  # Cost per million cache read tokens (default: 0.0)
         cache_write_per_mtok: float # Cost per million cache write tokens (default: 0.0)
 
-  # Lifecycle hooks
-  hooks:
-    on_start: string                # Template executed at workflow start
-    on_complete: string             # Template executed on success
-    on_error: string                # Template executed on failure
 
   # Arbitrary metadata for downstream tooling (dashboards, work-item trackers)
   # Surfaced verbatim in the workflow_started event.

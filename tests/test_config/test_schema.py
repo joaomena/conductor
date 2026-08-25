@@ -11,7 +11,6 @@ from conductor.config.schema import (
     ContextConfig,
     ForEachDef,
     GateOption,
-    HooksConfig,
     InputDef,
     LimitsConfig,
     OutputField,
@@ -525,26 +524,22 @@ class TestToolOutputConfig:
         assert runtime.tool_output.spill_dir == "./tool-output"
 
 
-class TestHooksConfig:
-    """Tests for HooksConfig model."""
+class TestHooksRemoved:
+    """The `hooks:` block (on_start/on_complete/on_error lifecycle hooks) was
+    removed as dead code. A workflow that still declares it must fail
+    validation with a clear error rather than silently ignoring the block."""
 
-    def test_empty_hooks(self) -> None:
-        """Test empty hooks configuration."""
-        config = HooksConfig()
-        assert config.on_start is None
-        assert config.on_complete is None
-        assert config.on_error is None
-
-    def test_all_hooks(self) -> None:
-        """Test all hooks configured."""
-        config = HooksConfig(
-            on_start="starting",
-            on_complete="completed",
-            on_error="error occurred",
-        )
-        assert config.on_start == "starting"
-        assert config.on_complete == "completed"
-        assert config.on_error == "error occurred"
+    def test_hooks_field_is_rejected(self) -> None:
+        """Declaring `hooks:` on a workflow raises a clear ValidationError."""
+        with pytest.raises(ValidationError) as exc_info:
+            WorkflowDef(
+                name="w",
+                entry_point="a",
+                hooks={"on_start": "x"},
+            )
+        message = str(exc_info.value)
+        assert "hooks" in message
+        assert "#476" in message
 
 
 class TestAgentDef:
@@ -967,7 +962,6 @@ class TestWorkflowDef:
             input={"goal": InputDef(type="string")},
             context=ContextConfig(mode="explicit"),
             limits=LimitsConfig(max_iterations=20),
-            hooks=HooksConfig(on_start="starting"),
         )
         assert workflow.version == "1.0.0"
         assert workflow.context.mode == "explicit"
