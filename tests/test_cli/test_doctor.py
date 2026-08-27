@@ -8,6 +8,7 @@ flag/exit-code cases; one test runs the real offline path end-to-end.
 from __future__ import annotations
 
 import importlib
+import io
 import json
 from unittest.mock import AsyncMock
 
@@ -69,6 +70,7 @@ def _prov(
     checked: bool = False,
     connection_ok: bool | None = None,
     connection_error: str | None = None,
+    connection_note: str | None = None,
     models: list[str] | list[ModelDiagnostic] | None = None,
     models_error: str | None = None,
     note: str | None = None,
@@ -96,6 +98,7 @@ def _prov(
         checked=checked,
         connection_ok=connection_ok,
         connection_error=connection_error,
+        connection_note=connection_note,
         models=model_diagnostics,
         models_error=models_error,
         note=note,
@@ -859,3 +862,148 @@ class TestDoctorMarkupSafety:
         assert "failed to load registries" in result.output
         assert "line 3" in result.output
         assert "No registries configured" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# Encoding fallback (issue #401)
+# ---------------------------------------------------------------------------
+
+
+class TestDoctorEncodingFallback:
+    """The table output degrades to ASCII glyphs on a stream that cannot
+    encode the Unicode ones, instead of dying part-written."""
+
+    def _bind_console(
+        self, monkeypatch: pytest.MonkeyPatch, encoding: str
+    ) -> tuple[io.BytesIO, io.TextIOWrapper]:
+        """Point the CLI's output console at a fresh buffer with *encoding*.
+
+        Returns the raw byte buffer rather than relying on ``result.output``:
+        Click's ``CliRunner`` captures through a UTF-8 stream that would
+        accept a glyph a real cp1252 console rejects, so a test could pass
+        on output the user never gets. Binding the CLI's console to a
+        ``TextIOWrapper`` in the target *encoding* makes a leaked glyph
+        raise ``UnicodeEncodeError`` at write time, surfacing via
+        ``result.exception``.
+        """
+        buffer = io.BytesIO()
+        stream = io.TextIOWrapper(buffer, encoding=encoding, newline="")
+        monkeypatch.setattr(_app_module, "output_console", make_console(file=stream, width=200))
+        monkeypatch.setattr(
+            _app_module, "console", make_console(file=stream, stderr=True, width=200)
+        )
+        return buffer, stream
+
+    @pytest.mark.parametrize(
+        "shape_kwargs",
+        [
+            pytest.param({}, id="no-connection-data"),
+            pytest.param(
+                {
+                    "checked": True,
+                    "connection_ok": True,
+                    "connection_note": "probe was inconclusive; endpoint may lack /v1/models",
+                },
+                id="connection-note",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("cli_args", [[], ["--check"], ["--models"]])
+    def test_cp1252_console_renders_ascii_glyphs_without_crashing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        shape_kwargs: dict[str, object],
+        cli_args: list[str],
+    ) -> None:
+        # The "connection-note" shape crossed with "--check"/"--models" is
+        # what exercises _connection_cell's warning branch: the two flags
+        # that add the Connection column are the only paths that ever touch
+        # the cp1252 stream with this data (#401 follow-up review).
+        buffer, stream = self._bind_console(monkeypatch, "cp1252")
+        report = DoctorReport(
+            providers=[_prov("copilot", installed=True, **shape_kwargs)],
+            registries=RegistryDiagnostic(
+                default="local",
+                registries=[
+                    RegistryInfo(name="local", type="path", source="~/.conductor", is_default=True)
+                ],
+            ),
+        )
+        _patch_gather(monkeypatch, report)
+        result = runner.invoke(app, ["doctor", *cli_args])
+        stream.flush()
+        assert result.exception is None
+        assert result.exit_code == 0
+        # Decode is exact, not lossy; a leaked glyph is caught by the
+        # result.exception assertion above, which fails at write time.
+        output = buffer.getvalue().decode("cp1252")
+        assert "OK" in output
+
+    def test_utf8_console_keeps_unicode_glyphs(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        buffer, stream = self._bind_console(monkeypatch, "utf-8")
+        report = DoctorReport(providers=[_prov("copilot", installed=True)])
+        _patch_gather(monkeypatch, report)
+        result = runner.invoke(app, ["doctor"])
+        stream.flush()
+        assert result.exception is None
+        assert result.exit_code == 0
+        output = buffer.getvalue().decode("utf-8")
+        assert "✓" in output
+        assert "OK" not in output
+
+    def test_stream_with_no_encoding_keeps_unicode_glyphs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A console file with no encoding (``.encoding is None``, e.g. an
+        in-memory ``StringIO``) is treated as capable of anything, not
+        downgraded to ASCII (#401)."""
+        stream = io.StringIO()
+        assert stream.encoding is None
+        monkeypatch.setattr(_app_module, "output_console", make_console(file=stream, width=200))
+        monkeypatch.setattr(
+            _app_module, "console", make_console(file=stream, stderr=True, width=200)
+        )
+        report = DoctorReport(providers=[_prov("copilot", installed=True)])
+        _patch_gather(monkeypatch, report)
+        result = runner.invoke(app, ["doctor"])
+        assert result.exception is None
+        assert result.exit_code == 0
+        assert "✓" in stream.getvalue()
+        assert "OK" not in stream.getvalue()
+
+
+class TestDoctorTierAndModelsErrorCells:
+    """Two more per-cell branches driven by the same glyph set as the
+    encoding-fallback tests above, exercised on the default UTF-8 path."""
+
+    def test_missing_tier_renders_dash(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Credentials and note are filled so the tier cell is the only one
+        # that can render a dash; with _prov's defaults both of those cells
+        # dash too, and the assertion holds even without the tier=None
+        # branch under test (caught by review on #469).
+        report = DoctorReport(
+            providers=[
+                _prov(
+                    "copilot",
+                    tier=None,
+                    creds=[CredentialEnvVar(name="COPILOT_TOKEN", present=True)],
+                    note="see docs",
+                )
+            ]
+        )
+        _patch_gather(monkeypatch, report)
+        result = runner.invoke(app, ["doctor"])
+        assert result.exit_code == 0
+        assert "—" in result.output
+
+    def test_models_error_renders_cross_with_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        report = DoctorReport(
+            providers=[
+                _prov("copilot", checked=True, connection_ok=True, models_error="rate limited")
+            ]
+        )
+        _patch_gather(monkeypatch, report)
+        result = runner.invoke(app, ["doctor", "--models"])
+        assert result.exit_code == 0
+        assert "rate limited" in result.output
+        assert "✗" in result.output
