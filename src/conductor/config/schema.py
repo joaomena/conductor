@@ -93,6 +93,42 @@ class InputDef(BaseModel):
         return v
 
 
+class McpConfig(BaseModel):
+    """Per-workflow configuration for exposure as an MCP tool.
+
+    Backs ``WorkflowDef.mcp`` (E6, DD4, FR11): a typed, validated block so a
+    typo (``expse: false``) is a schema error rather than silently ignored
+    ``metadata``. Every workflow is a candidate for exposure by default
+    (``expose: True``); ``conductor mcp serve``'s ``--allow``/``--deny``
+    flags outrank this block, which in turn outranks the default.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    expose: bool = True
+    """Whether this workflow is a candidate for MCP tool exposure."""
+
+    mode: Literal["async", "sync", "auto"] = "async"
+    """Invocation mode the MCP server should use for this workflow."""
+
+    read_only: bool = False
+    """Whether this workflow only reads state (no side effects)."""
+
+    destructive: bool = False
+    """Whether this workflow can destroy or irreversibly modify state."""
+
+    estimated_minutes: int | None = None
+    """Estimated wall-clock runtime in minutes, for client-side hints."""
+
+    @field_validator("estimated_minutes")
+    @classmethod
+    def validate_estimated_minutes(cls, v: int | None) -> int | None:
+        """Reject a non-positive estimate rather than silently accepting one."""
+        if v is not None and v <= 0:
+            raise ValueError("estimated_minutes must be positive when present")
+        return v
+
+
 class OutputField(BaseModel):
     """Schema for a single output field from an agent."""
 
@@ -3678,6 +3714,14 @@ class WorkflowDef(BaseModel):
 
     cost: CostConfig = Field(default_factory=CostConfig)
     """Cost tracking configuration."""
+
+    mcp: McpConfig = Field(default_factory=McpConfig)
+    """Exposure settings for ``conductor mcp serve``.
+
+    Absent from the YAML behaves identically to an explicit default block
+    (``expose: true``), so no existing workflow needs editing to keep its
+    current behavior once MCP exposure defaults on (DD4).
+    """
 
     metadata: dict[str, Any] = Field(default_factory=dict)
     """Arbitrary key-value metadata for external tooling (dashboards, trackers, etc.).
