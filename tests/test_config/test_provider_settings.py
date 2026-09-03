@@ -511,6 +511,37 @@ class TestSettingSourcesScoping:
         s = ProviderSettings(name="claude-agent-sdk", setting_sources=["user", "project"])
         assert ProviderSettings.model_validate(s.model_dump()) == s
 
+    def test_override_warns_before_discarding_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`--provider claude-agent-sdk` against a workflow that opted into a
+        settings tier must not drop it silently — every other structured field
+        gets the warning."""
+        import importlib
+        from types import SimpleNamespace
+
+        from conductor.config.schema import RuntimeConfig
+
+        run_mod = importlib.import_module("conductor.cli.run")
+        runtime = RuntimeConfig(
+            provider=ProviderSettings(name="claude-agent-sdk", setting_sources=["project"])
+        )
+        config = SimpleNamespace(workflow=SimpleNamespace(runtime=runtime))
+        messages: list[str] = []
+        monkeypatch.setattr(
+            run_mod, "verbose_log", lambda message, style="dim": messages.append(message)
+        )
+
+        run_mod._apply_provider_override(config, "claude-agent-sdk")
+
+        assert any("discards structured runtime.provider settings" in msg for msg in messages)
+
+    def test_described_for_verbose_output(self) -> None:
+        """A toggle that enables arbitrary hook execution has to be visible."""
+        from conductor.cli.run import _describe_provider
+
+        s = ProviderSettings(name="claude-agent-sdk", setting_sources=["project"])
+        assert _describe_provider(s) == "claude-agent-sdk setting_sources=['project']"
+        assert _describe_provider(ProviderSettings(name="claude-agent-sdk")) == "claude-agent-sdk"
+
     def test_unset_still_serializes_as_bare_string(self) -> None:
         s = ProviderSettings(name="claude-agent-sdk")
         assert s.has_structured_config() is False

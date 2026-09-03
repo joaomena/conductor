@@ -2996,7 +2996,28 @@ class TestSettingSourcesWiring:
         assert options.setting_sources == []
         assert options.skills == []
         assert options.tools == []
-        assert "--allowedTools" not in self._argv(options)
+        argv = self._argv(options)
+        # Positive anchor so the negative assertion cannot pass on a broken
+        # argv builder: `tools: []` still reaches the CLI as an empty tool set.
+        assert argv[argv.index("--tools") + 1] == ""
+        assert "--allowedTools" not in argv
+
+    @patch("conductor.providers.claude_agent_sdk.CLAUDE_AGENT_SDK_AVAILABLE", True)
+    def test_enabling_a_tier_warns_about_hooks(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Nothing else in the run output distinguishes a run that loaded the
+        target repo's hooks from one that did not."""
+        with caplog.at_level(logging.WARNING, logger="conductor.providers.claude_agent_sdk"):
+            ClaudeAgentSdkProvider(setting_sources=["project"])
+
+        assert "HOOKS" in caplog.text
+        assert "project" in caplog.text
+
+    @patch("conductor.providers.claude_agent_sdk.CLAUDE_AGENT_SDK_AVAILABLE", True)
+    def test_default_warns_about_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="conductor.providers.claude_agent_sdk"):
+            ClaudeAgentSdkProvider()
+
+        assert "HOOKS" not in caplog.text
 
     @patch("conductor.providers.claude_agent_sdk.CLAUDE_AGENT_SDK_AVAILABLE", True)
     async def test_omitted_tools_with_a_tier_keeps_the_default_preset(self) -> None:
