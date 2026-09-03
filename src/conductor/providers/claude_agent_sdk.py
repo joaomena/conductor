@@ -11,8 +11,9 @@ import sys
 import tempfile
 import time
 import unicodedata
+from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 from conductor.exceptions import ProviderError
 from conductor.install_hint import install_command
@@ -244,6 +245,11 @@ _TOOL_RESULT_PREVIEW_LEN: Final[int] = 500
 # in pyproject.toml.
 _DEFAULT_MODEL: Final[str] = "claude-sonnet-4-5"
 
+# Claude Code settings tiers, mirroring the SDK's own `SettingSource`. Kept as
+# a local alias rather than imported so the narrowing survives when the SDK is
+# absent (the ImportError fallback binds its symbols to `Any`).
+SettingSource = Literal["user", "project", "local"]
+
 # Sentinel meaning "expose every tool this server offers" in
 # ``MCPServerDef.tools``. Any other value is a narrowing filter the SDK has no
 # way to express — see :func:`_translate_mcp_servers`.
@@ -286,7 +292,9 @@ def _warn_if_session_lookup_unavailable() -> None:
     )
 
 
-def _resolve_skill_filter(skill_names: list[str], setting_sources: list[str]) -> list[str] | str:
+def _resolve_skill_filter(
+    skill_names: list[str], setting_sources: Sequence[SettingSource]
+) -> list[str] | Literal["all"]:
     """Value for ``ClaudeAgentOptions.skills`` — the name-level skill filter.
 
     Three cases, and the middle one is why this is not just ``skill_names``:
@@ -294,13 +302,13 @@ def _resolve_skill_filter(skill_names: list[str], setting_sources: list[str]) ->
     * Skills named by the workflow -> that exact list. An explicit
       ``skills:``/``plugins:`` declaration is the allowlist; settings-tier
       discovery does not widen what the author asked for.
-    * No named skills but a non-empty ``setting_sources`` -> ``"all"``. The
-      CLI discovers skills from the enabled tiers and they never appear in
-      ``skill_names``, so ``[]`` would permit nothing: the model would see the
-      repo's skills in its listing (which this filter does not suppress) and
-      every call would fail with "not in this session's skills allowlist".
-      ``"all"`` resolves to precisely what the enabled tiers found — the set
-      enabling them asked for.
+    * No named skills but a non-empty ``setting_sources`` -> ``"all"``. Skills
+      the CLI discovers from the enabled tiers never appear in
+      ``skill_names``, and ``[]`` sets the session's skill allowlist to empty
+      — which hides them from the model's listing and has the ``Skill`` tool
+      reject them. Enabling a tier would then load the repo's skills and hide
+      every one of them. ``"all"`` omits the filter, leaving exactly what the
+      enabled tiers discovered — the set enabling them asked for.
     * Neither -> ``[]``, an honest opt-out that enables nothing.
 
     Returns:
@@ -690,7 +698,7 @@ class ClaudeAgentSdkProvider(AgentProvider):
         max_turns: int | None = None,
         max_session_seconds: float | None = None,
         mcp_servers: dict[str, Any] | None = None,
-        setting_sources: list[str] | None = None,
+        setting_sources: Sequence[SettingSource] | None = None,
     ) -> None:
         if not CLAUDE_AGENT_SDK_AVAILABLE:
             raise ProviderError(
@@ -702,7 +710,22 @@ class ClaudeAgentSdkProvider(AgentProvider):
         # re-defaults an unset ``setting_sources`` to ``["user", "project"]``
         # whenever ``skills`` is set, so the empty list must be sent explicitly.
         # See the option block in ``execute``.
-        self._setting_sources: list[str] = list(setting_sources or [])
+        self._setting_sources: list[SettingSource] = list(setting_sources or [])
+        if self._setting_sources:
+            # Trust decision worth naming before the run rather than
+            # discovering after it, in the same spirit as the validator's
+            # dropped-component warnings: a tier brings its hooks, and those
+            # run shell commands on tool events.
+            logger.warning(
+                "claude-agent-sdk: ambient settings tiers enabled (%s). Sessions on this "
+                "provider load settings, instructions and HOOKS from those tiers -- "
+                "'project' reads <working_dir>/.claude/settings.json, whose hooks run "
+                "shell commands on tool events. This applies to every agent on the "
+                "provider, each resolving the tier against its own working_dir (agents "
+                "without one resolve against the directory `conductor run` was launched "
+                "in). Enable only for repositories trusted as much as the workflow.",
+                ", ".join(self._setting_sources),
+            )
         self._default_model = model or _DEFAULT_MODEL
         self._default_max_turns = max_turns if max_turns is not None else 50
         self._max_session_seconds = max_session_seconds
@@ -931,18 +954,24 @@ class ClaudeAgentSdkProvider(AgentProvider):
             else self._max_session_seconds
         )
 
+        # ``skills: []`` is the documented per-agent opt-out, and it outranks a
+        # workflow-global settings tier: an agent that asked for no skills gets
+        # none, tier or not. ``agent.skills is None`` (omitted) is a different
+        # signal and keeps the tier — same raw tri-state ``_resolve_tool_config``
+        # reads off ``agent.tools``.
+        effective_sources: list[SettingSource] = [] if agent.skills == [] else self._setting_sources
+
         sdk_tools, permission_mode = self._resolve_tool_config(
             tools,
             agent,
             # Either route to a skill counts. ``skill_names`` covers the ones
             # Conductor resolved (``skills:``/``plugins:``/discovery); a
             # non-empty ``setting_sources`` means the CLI does its own
-            # discovery from the session's settings tiers, and those skills are
-            # listed to the model without ever passing through
-            # ``skill_names``. Granting on the union is what stops the second
-            # route from being discovery without execution: the model would see
-            # the skill in its listing and hold no tool to invoke it with.
-            skills_enabled=bool(skill_names) or bool(self._setting_sources),
+            # discovery from the session's settings tiers, and those skills
+            # never pass through ``skill_names``. Granting on the union is what
+            # stops the second route from being discovery without execution:
+            # the model would be shown the skill and hold no tool to invoke it.
+            skills_enabled=bool(skill_names) or bool(effective_sources),
             agents_enabled=bool(custom_agents),
         )
 
@@ -994,7 +1023,10 @@ class ClaudeAgentSdkProvider(AgentProvider):
             #
             # A tier brings everything it defines, hooks included, so this is
             # only for repositories trusted as much as the workflow itself.
-            setting_sources=self._setting_sources,
+            # `effective_sources`, not the provider field: an agent that
+            # declared `skills: []` opts out of the tier entirely, hooks
+            # included.
+            setting_sources=effective_sources,
             # Load-bearing but invisible in argv: the SDK forwards an explicit
             # list in the `initialize` control request (_internal/query.py), and
             # only there does [] differ from None. None means "CLI defaults
@@ -1004,16 +1036,16 @@ class ClaudeAgentSdkProvider(AgentProvider):
             # rejected by the Skill tool, but their files stay readable on disk.
             #
             # `"all"` when the workflow opted into settings-tier discovery and
-            # named no skills itself. This is a SECOND gate, distinct from the
-            # `Skill` tool grant in `_resolve_tool_config`: a session can hold
-            # the tool and still have every call rejected. Skills discovered
-            # from a settings tier never pass through `skill_names`, so sending
-            # `[]` there permits nothing — the model lists the repo's skills
-            # (the listing leaks past this filter) and every invocation comes
-            # back "not in this session's skills allowlist". `"all"` widens the
-            # filter to exactly what the enabled tiers discovered, which is the
-            # set the workflow asked for by enabling them.
-            skills=_resolve_skill_filter(skill_names, self._setting_sources),
+            # named no skills itself. Skills discovered from a settings tier
+            # never pass through `skill_names`, so sending `[]` alongside a
+            # tier sets the session allowlist to empty and suppresses them from
+            # the listing outright: the tier would load the repo's skills and
+            # then hide every one of them. `"all"` omits the filter, leaving
+            # exactly what the enabled tiers discovered. This is a SECOND gate,
+            # distinct from the `Skill` tool grant in `_resolve_tool_config`: a
+            # session can hold the tool and still have a call rejected by the
+            # allowlist backstop if the model names a skill it was never shown.
+            skills=_resolve_skill_filter(skill_names, effective_sources),
             # Unlike `skills`, [] is already this field's default and means
             # nothing special.
             plugins=skill_plugins,
@@ -1539,10 +1571,11 @@ class ClaudeAgentSdkProvider(AgentProvider):
             skills_enabled: Whether this agent can reach a skill by any
                 route — resolved by Conductor (``skills:``/``plugins:``) *or*
                 discovered by the CLI itself from a non-empty
-                ``setting_sources``. Adds the ``Skill`` tool to an explicit
-                ``tools: []`` as its one carve-out. Without it a discovered
-                skill is unusable — visible to the model with no tool to
-                invoke it.
+                ``setting_sources`` (an agent's own ``skills: []`` opts out
+                of the tier and so out of this too). Adds the ``Skill`` tool
+                to an explicit ``tools: []`` as its one carve-out. Without the
+                tool the CLI shows the model no skill listing at all, so a
+                tier would discover skills that can never be reached.
 
         Returns:
             A ``(sdk_tools, permission_mode)`` tuple suitable for

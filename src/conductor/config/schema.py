@@ -2714,6 +2714,13 @@ class ProviderSettings(BaseModel):
     depend on the operator's personal machine — reproducible only by
     accident. Prefer ``["project"]``.
 
+    Scope: this field is workflow-global, while ``working_dir`` is per agent,
+    so every agent on the provider loads the enabled tiers — each resolving
+    them against its own ``working_dir``, and agents without one against the
+    directory ``conductor run`` was launched in. Point the tier-using agents
+    at the target repo, and give any agent that must stay hermetic an explicit
+    ``skills: []``, which opts that agent out of the tiers entirely.
+
     Example::
 
         runtime:
@@ -2906,6 +2913,13 @@ class ProviderSettings(BaseModel):
             if extras:
                 raise ValueError(f"Provider fields {extras} are only supported when name='aca'.")
 
+        if self.setting_sources is not None and self.name != "claude-agent-sdk":
+            raise ValueError(
+                "'setting_sources' is only supported when name='claude-agent-sdk' "
+                f"(got name={self.name!r}). It selects Claude Code settings tiers, "
+                "which no other provider reads."
+            )
+
         if self.hermes_home is not None and self.name != "hermes":
             raise ValueError("'hermes_home' is only supported when name='hermes'.")
 
@@ -3084,7 +3098,12 @@ class ProviderSettings(BaseModel):
 
     def has_structured_config(self) -> bool:
         """Return True when the provider has any non-default structured settings."""
-        return self.has_custom_routing() or self.has_external_runtime() or self.has_aca_config()
+        return (
+            self.has_custom_routing()
+            or self.has_external_runtime()
+            or self.has_aca_config()
+            or self.setting_sources is not None
+        )
 
     @model_serializer(mode="wrap")
     def _serialize(self, nxt: Any) -> Any:

@@ -473,3 +473,45 @@ class TestExternalRuntimeConnection:
         assert s.has_external_runtime()
         assert s.has_custom_routing()
         assert s.has_structured_config()
+
+
+class TestSettingSourcesScoping:
+    """``setting_sources`` is claude-agent-sdk-only, and security-relevant: a
+    request to load ambient hooks must never be accepted and then dropped."""
+
+    @pytest.mark.parametrize("name", ["copilot", "openai", "claude", "hermes", "aca"])
+    def test_rejected_on_other_providers(self, name: str) -> None:
+        """Only the ``claude-agent-sdk`` branch of the factory reads the field,
+        so on any other provider it would be a silent no-op. ``aca`` is the
+        sharpest case: the runner's four-key ``inner_provider_settings``
+        allowlist never forwards it to the sandbox, even with
+        ``inner_provider: claude-agent-sdk``."""
+        with pytest.raises(ValidationError, match="only supported when name='claude-agent-sdk'"):
+            ProviderSettings.model_validate({"name": name, "setting_sources": ["project"]})
+
+    def test_accepted_on_claude_agent_sdk(self) -> None:
+        s = ProviderSettings(name="claude-agent-sdk", setting_sources=["project"])
+        assert s.setting_sources == ["project"]
+
+    @pytest.mark.parametrize("tier", ["prject", "workspace", "PROJECT", ""])
+    def test_unknown_tier_rejected(self, tier: str) -> None:
+        """A typo would otherwise land straight on the CLI's
+        ``--setting-sources`` argument."""
+        with pytest.raises(ValidationError):
+            ProviderSettings.model_validate({"name": "claude-agent-sdk", "setting_sources": [tier]})
+
+    def test_counts_as_structured_config(self) -> None:
+        """Without this the ``@model_serializer`` collapses the object to the
+        bare name and the opt-in disappears; ``--provider`` overrides also drop
+        it with no warning."""
+        s = ProviderSettings(name="claude-agent-sdk", setting_sources=["project"])
+        assert s.has_structured_config()
+
+    def test_round_trips_through_model_dump(self) -> None:
+        s = ProviderSettings(name="claude-agent-sdk", setting_sources=["user", "project"])
+        assert ProviderSettings.model_validate(s.model_dump()) == s
+
+    def test_unset_still_serializes_as_bare_string(self) -> None:
+        s = ProviderSettings(name="claude-agent-sdk")
+        assert s.has_structured_config() is False
+        assert s.model_dump() == "claude-agent-sdk"
